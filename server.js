@@ -114,6 +114,40 @@ function extractLink(block) {
   const guid = block.match(/<guid\b[^>]*>([\s\S]*?)<\/guid>/i);
   return guid ? guid[1].trim() : "";
 }
+
+/* ---------- 条目配图提取 ---------- */
+function normalizeImageUrl(u, base) {
+  if (!u) return "";
+  u = decodeEntities(u).trim();
+  if (!u || /^(data|javascript):/i.test(u)) return "";
+  if (u.startsWith("//")) u = "https:" + u;
+  try { u = new URL(u, base || undefined).href; } catch { return ""; }
+  return /^https?:\/\//i.test(u) ? u : "";
+}
+/* RSS 里 CDATA 正文可能是转义过的 HTML，原始块搜不到 <img；
+ * 拼一份把 &lt;/&gt; 还原后的文本一起搜，两种写法都能命中 */
+function extractImage(block, baseUrl) {
+  const hay = block + "\n" + block.replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  const found = [];
+  for (const tag of hay.match(/<enclosure\b[^>]*>/gi) || []) {
+    const url = (tag.match(/\burl=["']([^"']+)["']/i) || [])[1];
+    const type = (tag.match(/\btype=["']([^"']+)["']/i) || [])[1] || "";
+    if (url && (/^image\//i.test(type) || /\.(jpe?g|png|webp|gif)([?#]|$)/i.test(url))) found.push(url);
+  }
+  for (const tag of hay.match(/<(?:media:content|media:thumbnail)\b[^>]*>/gi) || []) {
+    const url = (tag.match(/\burl=["']([^"']+)["']/i) || [])[1];
+    if (url) found.push(url);
+  }
+  const itunes = hay.match(/<itunes:image\b[^>]*\bhref=["']([^"']+)["']/i);
+  if (itunes) found.push(itunes[1]);
+  const img = hay.match(/<img\b[^>]*\bsrc=["']([^"']+)["']/i);
+  if (img) found.push(img[1]);
+  for (const c of found) {
+    const u = normalizeImageUrl(c, baseUrl);
+    if (u) return u;
+  }
+  return "";
+}
 function parseFeed(xml) {
   const out = [];
   const items = xml.match(/<(?:item|entry)\b[\s\S]*?<\/(?:item|entry)>/gi) || [];
@@ -126,7 +160,8 @@ function parseFeed(xml) {
     if (isNaN(ts)) ts = 0;
     out.push({
       title, link, ts,
-      snippet: cleanText(extract(it, ["description", "summary", "content:encoded", "content"]), 180)
+      snippet: cleanText(extract(it, ["description", "summary", "content:encoded", "content"]), 180),
+      image: extractImage(it, link)
     });
     if (out.length >= 30) break;
   }
@@ -149,7 +184,8 @@ function parseSohuAuthor(html, authorId) {
       title: cleanText(o.title),
       link: `https://m.sohu.com/a/${o.id}_${authorId}`,
       ts: o.postTime || 0,
-      snippet: cleanText(o.brief, 180)
+      snippet: cleanText(o.brief, 180),
+      image: normalizeImageUrl(o.pic || o.img || "")
     });
   }
   return out.sort((a, b) => b.ts - a.ts);
@@ -193,7 +229,8 @@ async function fetchBilibiliOnce(mid) {
     title: cleanText(v.title),
     link: "https://www.bilibili.com/video/" + v.bvid,
     ts: v.created ? v.created * 1000 : 0,
-    snippet: cleanText(v.description, 120) + (v.length ? ` [时长 ${v.length}]` : "")
+    snippet: cleanText(v.description, 120) + (v.length ? ` [时长 ${v.length}]` : ""),
+    image: v.pic ? (v.pic.startsWith("//") ? "https:" + v.pic : v.pic) : ""
   })).sort((a, b) => b.ts - a.ts);
 }
 
@@ -233,7 +270,11 @@ function readDiskCache() {
   return null;
 }
 function writeDiskCache(c) {
-  try { fs.writeFileSync(CACHE_FILE, JSON.stringify(c)); } catch {}
+  try {
+    const tmp = CACHE_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(c));
+    fs.renameSync(tmp, CACHE_FILE);
+  } catch {}
 }
 async function fetchSource(s) {
   if (s.kind === "bilibili") return fetchBilibili(s.mid);
