@@ -4,6 +4,8 @@
  *  - B站 UP主视频（直接调用 bilibili wbi 签名 API）
  * 每个源带 type(official/blogger) 与 lang(cn/en) 两个维度，供页面筛选。
  * 磁盘缓存 15 分钟，过期先回旧数据再后台刷新。
+ * 迭代二：跨源同题聚合、每源重试退避与全局并发上限、ETag/Last-Modified
+ * 条件请求、/api/stats 源状态统计、缓存 schema v2（自动迁移 v1）、结构化日志。
  */
 const http = require("http");
 const https = require("https");
@@ -20,6 +22,9 @@ const NODE_PATH_FILE = path.join(DIR, "node-path.txt");
 const PORTS = [8437, 8438, 8439, 8440, 8441];
 const TTL = 15 * 60 * 1000;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const SCHEMA_VERSION = 2;     /* 缓存 schema 版本：2 = 含 stats / validators / 去重标注 */
+const FETCH_CONCURRENCY = 4;  /* 全局抓取并发上限 */
+const DUP_WINDOW = 72 * 60 * 60 * 1000;  /* 跨源同题聚合的时间窗 */
 
 /* kind: rss | bilibili | sohu   type: institution | media | blogger   lang: cn | en */
 const SOURCES = [
@@ -53,14 +58,17 @@ const SOURCES = [
 ];
 
 /* ---------- HTTP 抓取 ---------- */
-function fetchUrl(url, headers = {}, redirects = 3) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* 底层抓取：返回 { status, headers, body }；条件请求命中 304 时返回 null */
+function fetchUrlRaw(url, headers = {}, redirects = 3) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith("http://") ? http : https;
     const req = mod.get(url, { headers: { "User-Agent": UA, "Accept": "*/*", ...headers }, timeout: 12000 }, (res) => {
       if (res.statusCode >= 301 && res.statusCode <= 308 && res.headers.location && redirects > 0) {
         res.resume();
-        return resolve(fetchUrl(new URL(res.headers.location, url).href, headers, redirects - 1));
+        return resolve(fetchUrlRaw(new URL(res.headers.location, url).href, headers, redirects - 1));
       }
+      if (res.statusCode === 304) { res.resume(); return resolve(null); }
       if (res.statusCode !== 200) { res.resume(); return reject(new Error("HTTP " + res.statusCode)); }
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
@@ -72,12 +80,42 @@ function fetchUrl(url, headers = {}, redirects = 3) {
           else if (enc === "deflate") buf = zlib.inflateSync(buf);
           else if (enc === "br") buf = zlib.brotliDecompressSync(buf);
         } catch {}
-        resolve(buf.toString("utf8"));
+        resolve({ status: res.statusCode, headers: res.headers, body: buf.toString("utf8") });
       });
     });
     req.on("timeout", () => req.destroy(new Error("timeout")));
     req.on("error", reject);
   });
+}
+async function fetchUrl(url, headers = {}, redirects = 3) {
+  const r = await fetchUrlRaw(url, headers, redirects);
+  return r === null ? "" : r.body;
+}
+/* 重试退避：共 attempts 次尝试，失败后指数退避 + 随机抖动 */
+async function withRetry(fn, attempts, baseDelay = 800) {
+  let lastErr;
+  for (let a = 0; a < attempts; a++) {
+    if (a > 0) await sleep(baseDelay * 2 ** (a - 1) + Math.floor(Math.random() * 400));
+    try { return await fn(); } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+/* 带全局并发上限的批量执行；fn 自行兜底错误、永不抛出 */
+async function mapLimit(list, limit, fn) {
+  const results = new Array(list.length);
+  let next = 0;
+  async function worker() {
+    while (next < list.length) {
+      const i = next++;
+      results[i] = await fn(list[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, () => worker()));
+  return results;
+}
+/* 结构化日志：一行一条 JSON，便于 grep 与排查失败源 */
+function logEv(ev, fields) {
+  console.log(JSON.stringify(Object.assign({ ev, t: new Date().toISOString() }, fields)));
 }
 function getJson(url, headers = {}) {
   return fetchUrl(url, headers).then((s) => JSON.parse(s));
@@ -258,16 +296,82 @@ function fetchBilibili(mid) {
   return p;
 }
 
+/* ---------- 跨源同题聚合 ---------- */
+/* 标题归一化：NFKC 折叠全角、转小写、去掉全部非字母数字字符 */
+function normTitleKey(t) {
+  return String(t || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+/* 分词：英文按连续字母数字词（≥2 位），中文按相邻单字 bigram */
+function titleTokens(t) {
+  const s = String(t || "").normalize("NFKC").toLowerCase();
+  const toks = [];
+  for (const m of s.match(/[a-z0-9]+/g) || []) if (m.length >= 2) toks.push(m);
+  const cjk = s.match(/[\u4e00-\u9fff]/g) || [];
+  for (let i = 0; i + 1 < cjk.length; i++) toks.push(cjk[i] + cjk[i + 1]);
+  return new Set(toks);
+}
+function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+/* 跨源同题合并：最新一条作代表卡（dupCount/dupes），其余标 dupOf 指向代表。
+ * 判定：标题归一化后完全一致，或分词 Jaccard ≥ 0.72，且发布时间相差 ≤ 72 小时 */
+function annotateDupes(feeds) {
+  const rows = [];
+  for (const [src, f] of Object.entries(feeds)) {
+    for (const it of f.items || []) {
+      it.dupCount = 0; it.dupes = null; it.dupOf = null;
+      rows.push({ src, it, norm: normTitleKey(it.title), toks: titleTokens(it.title) });
+    }
+  }
+  rows.sort((a, b) => (b.it.ts || 0) - (a.it.ts || 0));
+  const clusters = [];
+  for (const r of rows) {
+    let hit = null;
+    for (const c of clusters) {
+      const rep = c[0];
+      if (r.it.ts && rep.it.ts && Math.abs(r.it.ts - rep.it.ts) > DUP_WINDOW) continue;
+      if (r.norm && r.norm === rep.norm) { hit = c; break; }
+      if (!hit && jaccard(r.toks, rep.toks) >= 0.72) hit = c;
+    }
+    if (hit) hit.push(r); else clusters.push([r]);
+  }
+  for (const c of clusters) {
+    if (c.length < 2) continue;
+    const rep = c[0];
+    rep.it.dupCount = c.length - 1;
+    rep.it.dupes = c.slice(1).map((r) => ({ title: r.it.title, link: r.it.link, src: r.src }));
+    for (const r of c.slice(1)) r.it.dupOf = rep.it.link;
+  }
+}
+
 /* ---------- 缓存与刷新 ---------- */
 let memCache = null;
 let refreshing = null;
 
 function readDiskCache() {
+  let j = null;
   try {
-    const j = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    if (j && j.feeds) return j;
-  } catch {}
-  return null;
+    j = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+  } catch (e) {
+    if (e && e.code !== "ENOENT") logEv("cache", { note: "缓存读取失败，按空缓存处理", error: String(e.message || e) });
+    return null;
+  }
+  if (!j || !j.feeds) return null;
+  if (!j.schemaVersion) {
+    /* v1 -> v2：补齐 stats / validators / 去重字段，并立即落盘 */
+    j.stats = j.stats || {};
+    j.validators = j.validators || {};
+    for (const f of Object.values(j.feeds)) {
+      for (const it of f.items || []) { it.dupCount = 0; it.dupes = null; it.dupOf = null; }
+    }
+    j.schemaVersion = SCHEMA_VERSION;
+    writeDiskCache(j);
+    logEv("cache", { note: "已把缓存从 v1 迁移到 v" + SCHEMA_VERSION });
+  }
+  return j;
 }
 function writeDiskCache(c) {
   try {
@@ -276,28 +380,77 @@ function writeDiskCache(c) {
     fs.renameSync(tmp, CACHE_FILE);
   } catch {}
 }
-async function fetchSource(s) {
-  if (s.kind === "bilibili") return fetchBilibili(s.mid);
-  if (s.kind === "sohu") {
-    const html = await fetchUrl(`https://m.sohu.com/media/${s.authorId}`);
-    return parseSohuAuthor(html, s.authorId);
+function condHeaders(v) {
+  const h = {};
+  if (v && v.etag) h["If-None-Match"] = v.etag;
+  if (v && v.lastModified) h["If-Modified-Since"] = v.lastModified;
+  return h;
+}
+function condStore(headers) {
+  const out = {};
+  if (headers.etag) out.etag = headers.etag;
+  if (headers["last-modified"]) out.lastModified = headers["last-modified"];
+  return out;
+}
+/* 抓取单源，RSS/搜狐带条件请求；返回 { items, headers } 或 { notModified: true } */
+async function fetchSource(s, validators) {
+  if (s.kind === "bilibili") {
+    return { items: await fetchBilibili(s.mid), headers: {} };
   }
-  const xml = await fetchUrl(s.url);
-  return parseFeed(xml);
+  if (s.kind === "sohu") {
+    const r = await fetchUrlRaw(`https://m.sohu.com/media/${s.authorId}`, condHeaders(validators));
+    if (r === null) return { notModified: true };
+    return { items: parseSohuAuthor(r.body, s.authorId), headers: condStore(r.headers) };
+  }
+  const r = await fetchUrlRaw(s.url, condHeaders(validators));
+  if (r === null) return { notModified: true };
+  return { items: parseFeed(r.body), headers: condStore(r.headers) };
 }
 async function refreshAll() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
+    const started = Date.now();
+    const prev = memCache;
     const feeds = {};
-    await Promise.all(SOURCES.map(async (s) => {
+    const stats = (prev && prev.stats) || {};
+    const validators = (prev && prev.validators) || {};
+    await mapLimit(SOURCES, FETCH_CONCURRENCY, async (s) => {
+      const t0 = Date.now();
+      const st = stats[s.key] || (stats[s.key] = {});
+      const oldFeed = (prev && prev.feeds && prev.feeds[s.key]) || null;
       try {
-        feeds[s.key] = { items: await fetchSource(s), error: null };
+        /* B站接口自带风控重试，外层少试一次；其余源 3 次尝试 */
+        const r = await withRetry(() => fetchSource(s, validators[s.key]), s.kind === "bilibili" ? 2 : 3);
+        if (r.notModified && oldFeed) {
+          feeds[s.key] = { items: oldFeed.items || [], error: null };
+          st.lastNote = "304 未变化";
+        } else {
+          if (r.headers && Object.keys(r.headers).length) validators[s.key] = r.headers;
+          else delete validators[s.key];
+          feeds[s.key] = { items: r.items, error: null };
+        }
+        st.lastOk = Date.now();
+        st.failStreak = 0;
+        st.items = feeds[s.key].items.length;
+        logEv("fetch", { key: s.key, ok: 1, items: st.items, ms: Date.now() - t0, note: r.notModified ? "not-modified" : undefined });
       } catch (e) {
-        feeds[s.key] = { items: [], error: String(e.message || e) };
+        const msg = String(e.message || e);
+        /* 失败时保留上一轮条目：页面有数据可用，只标错误不丢内容 */
+        feeds[s.key] = { items: (oldFeed && oldFeed.items) || [], error: msg };
+        st.failStreak = (st.failStreak || 0) + 1;
+        st.lastError = msg;
+        st.lastErrorTs = Date.now();
+        st.items = feeds[s.key].items.length;
+        logEv("fetch", { key: s.key, ok: 0, error: msg, failStreak: st.failStreak, reused: feeds[s.key].items.length, ms: Date.now() - t0 });
       }
-    }));
-    memCache = { ts: Date.now(), feeds };
+    });
+    annotateDupes(feeds);
+    memCache = { schemaVersion: SCHEMA_VERSION, ts: Date.now(), feeds, stats, validators };
     writeDiskCache(memCache);
+    const okN = SOURCES.filter((s) => !feeds[s.key].error).length;
+    const itemsN = Object.values(feeds).reduce((n, f) => n + (f.items || []).length, 0);
+    const mergedN = Object.values(feeds).reduce((n, f) => n + (f.items || []).filter((i) => i.dupCount > 0).length, 0);
+    logEv("refresh", { ms: Date.now() - started, ok: okN, fail: SOURCES.length - okN, items: itemsN, merged: mergedN });
     return memCache;
   })();
   try { return await refreshing; }
@@ -332,6 +485,28 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
       return res.end(JSON.stringify({ error: String(e.message || e) }));
     }
+  }
+  if (u.pathname === "/api/stats") {
+    const data = memCache || readDiskCache();
+    const stats = (data && data.stats) || {};
+    const now = Date.now();
+    const sources = SOURCES.map((s) => {
+      const st = stats[s.key] || {};
+      const f = (data && data.feeds && data.feeds[s.key]) || {};
+      return {
+        key: s.key, name: s.name, kind: s.kind, type: s.type, lang: s.lang,
+        items: (f.items || []).length,
+        error: f.error || null,
+        lastOk: st.lastOk || null,
+        lastOkAgoMs: st.lastOk ? now - st.lastOk : null,
+        failStreak: st.failStreak || 0,
+        lastError: st.lastError || null,
+        lastErrorTs: st.lastErrorTs || null,
+        conditional: !!(data && data.validators && data.validators[s.key])
+      };
+    });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    return res.end(JSON.stringify({ ts: now, cacheTs: data ? data.ts : null, schemaVersion: data ? (data.schemaVersion || 1) : null, sources }, null, 2));
   }
   if (u.pathname === "/" || u.pathname === "/index.html") {
     try {

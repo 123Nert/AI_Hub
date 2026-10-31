@@ -93,6 +93,13 @@
     padding: 3px 11px; border-radius: 999px; font-size: 12px; cursor: pointer; }
   #readAllBtn:hover { color: var(--text); border-color: var(--accent); }
 
+  .dupbtn { background: none; border: none; color: var(--accent); font-size: 11.5px; cursor: pointer; padding: 0; text-align: left; }
+  .dupbtn:hover { text-decoration: underline; }
+  .duplist { font-size: 11.5px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 9px; display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+  .dupitem { cursor: pointer; line-height: 1.5; }
+  .dupitem:hover { color: var(--text); }
+  .dupitem .dsrc { color: var(--accent); font-weight: 600; margin-right: 4px; }
+
   .skel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; height: 120px; position: relative; overflow: hidden; }
   .skel::after { content: ""; position: absolute; inset: 0;
     background: linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent);
@@ -145,7 +152,7 @@
   <div class="srcnote" id="srcnote"></div>
   <main class="grid" id="grid"><div class="skel"></div><div class="skel"></div><div class="skel"></div>
     <div class="skel"></div><div class="skel"></div><div class="skel"></div></main>
-  <footer>数据来自各站点公开 RSS · 本地服务每 15 分钟更新缓存 · 已读/收藏仅保存在本机浏览器（localStorage）· 快捷筛选仅做客户端筛选，不代表完整收录</footer>
+  <footer>数据来自各站点公开 RSS · 本地服务每 15 分钟更新缓存 · 已读/收藏仅保存在本机浏览器（localStorage）· 快捷筛选仅做客户端筛选，不代表完整收录 · <a href="/api/stats" target="_blank" rel="noopener" style="color:inherit">服务状态</a></footer>
 </div>
 <script>
 const $ = (s) => document.querySelector(s);
@@ -217,7 +224,10 @@ function render() {
   DATA.sources.forEach(s => { infoOf[s.key] = s; });
   const rows = [];
   for (const [key, f] of Object.entries(DATA.feeds)) {
-    for (const it of f.items || []) rows.push({ ...it, src: key });
+    for (const it of f.items || []) {
+      if (it.dupOf) continue; /* 同题聚合：非代表条目不重复展示 */
+      rows.push({ ...it, src: key });
+    }
   }
   rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const kw = q.trim().toLowerCase();
@@ -274,6 +284,31 @@ function paintGrid(shown, infoOf) {
       im.src = r.image;
       th.appendChild(im);
       a.querySelector(".cardbody").appendChild(th);
+    }
+    if (r.dupCount > 0) {
+      const dw = document.createElement("div");
+      dw.className = "dupwrap";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "dupbtn";
+      btn.textContent = "＋ 另有 " + r.dupCount + " 条相同报道";
+      const list = document.createElement("div");
+      list.className = "duplist";
+      list.hidden = true;
+      for (const d of r.dupes || []) {
+        const item = document.createElement("span");
+        item.className = "dupitem";
+        const sName = document.createElement("span");
+        sName.className = "dsrc";
+        sName.textContent = (infoOf[d.src] || {}).name || d.src;
+        item.appendChild(sName);
+        item.appendChild(document.createTextNode(d.title));
+        item.dataset.link = d.link;
+        list.appendChild(item);
+      }
+      dw.appendChild(btn);
+      dw.appendChild(list);
+      a.appendChild(dw);
     }
     frag.appendChild(a);
   }
@@ -386,6 +421,21 @@ function fillSources() {
 
 /* 卡片区域统一事件委托：加载更多 / 星标 / 点击标记已读 */
 grid.addEventListener("click", (e) => {
+  const dupbtn = e.target.closest(".dupbtn");
+  if (dupbtn) {
+    e.preventDefault();
+    const list = dupbtn.parentElement.querySelector(".duplist");
+    list.hidden = !list.hidden;
+    const n = list.querySelectorAll(".dupitem").length;
+    dupbtn.textContent = list.hidden ? "＋ 另有 " + n + " 条相同报道" : "－ 收起相同报道";
+    return;
+  }
+  const dupitem = e.target.closest(".dupitem");
+  if (dupitem) {
+    e.preventDefault();
+    window.open(dupitem.dataset.link, "_blank", "noopener");
+    return;
+  }
   if (e.target.closest("#loadMore")) {
     shownCount += PAGE_STEP;
     render();
