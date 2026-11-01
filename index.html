@@ -152,6 +152,10 @@
   html[data-theme="light"] .quick button:hover, html[data-theme="light"] .quick button.on { background: rgba(245,181,68,.24); color: #7a5410; }
   html[data-theme="light"] .hotword { color: #7c5cd6; }
   html[data-theme="light"] .skel::after { background: linear-gradient(90deg, transparent, rgba(0,0,0,.05), transparent); }
+  html[data-theme="light"] nav button.on, html[data-theme="light"] .frow button.on {
+    background: linear-gradient(90deg, rgba(91,140,255,.14), rgba(154,107,255,.14)); color: #2f56c4; }
+  html[data-theme="light"] #typeRow button[data-v="institution"].on { color: #9a6b12; }
+  html[data-theme="light"] .srcnote { color: #9a6b12; }
 </style>
 </head>
 <body>
@@ -267,12 +271,12 @@ const PAGE_STEP = 60;
 let shownCount = PAGE_STEP;
 
 const TYPE_INFO = {
-  institution: { label: "官方机构", bg: "rgba(245,181,68,.14)", fg: "#f5c65b" },
-  media:       { label: "官方媒体", bg: "rgba(61,214,140,.14)", fg: "#5fe3a1" },
-  blogger:     { label: "博主 · UP主", bg: "rgba(154,107,255,.16)", fg: "#c3a1ff" },
-  community:   { label: "社区", bg: "rgba(91,140,255,.16)", fg: "#8fb0ff" },
-  paper:       { label: "论文", bg: "rgba(64,190,190,.16)", fg: "#6fd8d8" },
-  repo:        { label: "新仓库", bg: "rgba(235,240,250,.14)", fg: "#c9d2e8" }
+  institution: { label: "官方机构", bg: "rgba(245,181,68,.14)", fg: "#f5c65b", bgL: "rgba(180,110,10,.12)", fgL: "#8a5a06" },
+  media:       { label: "官方媒体", bg: "rgba(61,214,140,.14)", fg: "#5fe3a1", bgL: "rgba(16,140,90,.12)", fgL: "#0d7a4e" },
+  blogger:     { label: "博主 · UP主", bg: "rgba(154,107,255,.16)", fg: "#c3a1ff", bgL: "rgba(110,70,220,.12)", fgL: "#5b3cb5" },
+  community:   { label: "社区", bg: "rgba(91,140,255,.16)", fg: "#8fb0ff", bgL: "rgba(50,90,220,.12)", fgL: "#2f56c4" },
+  paper:       { label: "论文", bg: "rgba(64,190,190,.16)", fg: "#6fd8d8", bgL: "rgba(10,130,130,.12)", fgL: "#0c6f6f" },
+  repo:        { label: "新仓库", bg: "rgba(235,240,250,.14)", fg: "#c9d2e8", bgL: "rgba(70,90,140,.10)", fgL: "#47598c" }
 };
 const LANG_INFO = { cn: "中文", en: "English" };
 const QUICK_LABEL = { all: "全部", recent: "最近24小时", tools: "工具 / 教程 / 工作流", models: "模型 / 发布 / 评测", phones: "📱 手机上新", star: "⭐ 收藏" };
@@ -417,13 +421,15 @@ function paintGrid(shown, infoOf) {
   for (const r of shown.slice(0, shownCount)) {
     const s = infoOf[r.src] || {};
     const t = TYPE_INFO[s.type] || TYPE_INFO.media;
+    const light = document.documentElement.dataset.theme === "light";
+    const tbg = light ? (t.bgL || t.bg) : t.bg, tfg = light ? (t.fgL || t.fg) : t.fg;
     const isRead = !!reads[r.link];
     const isNew = !isRead && r.ts > NEW_BASELINE;
     const a = document.createElement("a");
     a.className = "card" + (isRead ? " read" : "");
     a.href = r.link; a.target = "_blank"; a.rel = "noopener";
     a.innerHTML =
-      '<span class="badges"><span class="badge" style="background:' + t.bg + ';color:' + t.fg + '">' +
+      '<span class="badges"><span class="badge" style="background:' + tbg + ';color:' + tfg + '">' +
         (s.name || r.src) + '</span>' + (isNew ? '<span class="newchip">NEW</span>' : "") + '</span>' +
       '<div class="cardbody"><div class="cardtext"><h3></h3>' +
       (r.snippet ? "<p></p>" : "") + '</div></div>' +
@@ -810,6 +816,7 @@ function applyTheme() {
   const btn = $("#themeBtn");
   btn.textContent = theme === "auto" ? "🌓" : theme === "light" ? "☀️" : "🌙";
   btn.title = "主题：" + ({ auto: "跟随系统", light: "浅色", dark: "深色" })[theme];
+  render(); /* 主题切换后按新配色重绘徽章 */
 }
 $("#themeBtn").addEventListener("click", () => {
   theme = theme === "auto" ? "light" : theme === "light" ? "dark" : "auto";
