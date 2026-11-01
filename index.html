@@ -202,6 +202,7 @@
     <button data-quick="recent">⚡ 最近 24 小时</button>
     <button data-quick="tools">🧰 工具 / 教程 / 工作流</button>
     <button data-quick="models">🧠 模型 / 发布 / 评测</button>
+    <button data-quick="phones">📱 手机上新</button>
     <button data-quick="star">⭐ 收藏</button>
     <button data-quick="clear">清除快捷筛选</button>
     <button id="muteBtn" title="按正则规则隐藏不感兴趣的内容">🔇 屏蔽</button>
@@ -274,7 +275,7 @@ const TYPE_INFO = {
   repo:        { label: "新仓库", bg: "rgba(235,240,250,.14)", fg: "#c9d2e8" }
 };
 const LANG_INFO = { cn: "中文", en: "English" };
-const QUICK_LABEL = { all: "全部", recent: "最近24小时", tools: "工具 / 教程 / 工作流", models: "模型 / 发布 / 评测", star: "⭐ 收藏" };
+const QUICK_LABEL = { all: "全部", recent: "最近24小时", tools: "工具 / 教程 / 工作流", models: "模型 / 发布 / 评测", phones: "📱 手机上新", star: "⭐ 收藏" };
 function platformOf(s) {
   if (s.kind === "bilibili") return "B站视频";
   if (s.kind === "gh") return "GitHub";
@@ -292,6 +293,7 @@ function matchesQuick(r) {
   const text = (r.title + " " + (r.snippet || "")).toLowerCase();
   if (quick === "tools") return /工具|教程|工作流|提示词|agent|cursor|claude code|copilot|workflow|tutorial|prompt|coding|编程|实战|how to/.test(text);
   if (quick === "models") return /模型|发布|评测|基准|版本|gpt|gemini|claude|deepseek|llama|model|release|benchmark|openai|anthropic|google ai/.test(text);
+  if (quick === "phones") return /(手机|iphone|苹果|华为|小米|xiaomi|redmi|oppo|vivo|一加|oneplus|荣耀|honor|三星|galaxy|pixel|realme|真我|iqoo|努比亚|魅族|meizu|折叠屏|旗舰|骁龙|天玑|麒麟|快充|开售|首销|发布会|上新)/.test(text);
   return true;
 }
 

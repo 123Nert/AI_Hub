@@ -47,6 +47,9 @@ const SOURCES = [
   { key: "hn",          name: "Hacker News",     kind: "rss", type: "media", lang: "en", url: "https://hnrss.org/newest?q=AI+OR+LLM&count=30" },
   { key: "techcrunch",  name: "TechCrunch AI",   kind: "rss", type: "media", lang: "en", url: "https://techcrunch.com/category/artificial-intelligence/feed/" },
   { key: "verge",       name: "The Verge AI",    kind: "rss", type: "media", lang: "en", url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml" },
+  { key: "macrumors",   name: "MacRumors",       kind: "rss", type: "media", lang: "en", url: "https://www.macrumors.com/macrumors.xml" },
+  { key: "9to5google",  name: "9to5Google",      kind: "rss", type: "media", lang: "en", url: "https://9to5google.com/feed" },
+  { key: "androidauth", name: "Android Authority", kind: "rss", type: "media", lang: "en", url: "https://www.androidauthority.com/feed/" },
   /* ---- 官方机构 · 中文公众号 ---- */
   { key: "jikegongyuan", name: "极客公园·公众号", kind: "rss", type: "media", lang: "cn", url: "https://wechat2rss.xlab.app/feed/1a5aec98e71c707c8ca092bc2c255b9d4bac477d.xml" },
   /* ---- 博主 · 中文（公众号 / 独立博客 / B站 UP主） ---- */
@@ -402,6 +405,11 @@ function hotwords(feeds, days = 7, top = 12) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+/* 手机上新栏目：品牌/机型/发布节奏关键词，主页快捷视图与 /digest 简报共用 */
+const PHONE_RX = /(手机|iphone|苹果|华为|小米|xiaomi|redmi|oppo|vivo|一加|oneplus|荣耀|honor|三星|galaxy|pixel|realme|真我|iqoo|努比亚|魅族|meizu|折叠屏|旗舰|骁龙|天玑|麒麟|快充|开售|首销|发布会|上新)/i;
+function isPhoneItem(r) {
+  return PHONE_RX.test(String(r.title || "") + " " + String(r.snippet || ""));
+}
 /* /digest 每日简报：最近 24 小时条目按类型分组 + 热词，浅色排版、适合直接打印 */
 function buildDigestHtml(data) {
   const now = Date.now();
@@ -415,10 +423,10 @@ function buildDigestHtml(data) {
     }
   }
   rows.sort((a, b) => (b.dupCount || 0) - (a.dupCount || 0) || (b.ts || 0) - (a.ts || 0));
-  const TYPE_LABEL = { institution: "🏢 官方机构", media: "📰 媒体报道", community: "👥 社区讨论", blogger: "✍ 博主 · UP主", paper: "📄 论文速览", repo: "📦 热门新仓库" };
+  const TYPE_LABEL = { phone: "📱 手机上新", institution: "🏢 官方机构", media: "📰 媒体报道", community: "👥 社区讨论", blogger: "✍ 博主 · UP主", paper: "📄 论文速览", repo: "📦 热门新仓库" };
   const sections = {};
   for (const r of rows) {
-    const t = (sinfo[r.src] || {}).type || "media";
+    const t = isPhoneItem(r) ? "phone" : ((sinfo[r.src] || {}).type || "media");
     (sections[t] = sections[t] || []).push(r);
   }
   const bits = [];
