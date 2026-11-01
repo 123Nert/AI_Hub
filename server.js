@@ -6,6 +6,8 @@
  * 磁盘缓存 15 分钟，过期先回旧数据再后台刷新。
  * 迭代二：跨源同题聚合、每源重试退避与全局并发上限、ETag/Last-Modified
  * 条件请求、/api/stats 源状态统计、缓存 schema v2（自动迁移 v1）、结构化日志。
+ * 迭代三：arXiv / Reddit / GitHub 热门新仓库源（paper / community / repo 类型）、
+ * 热词统计、/api/digest 与 /digest 每日简报页（服务端渲染、可打印）、服务端定时自刷新。
  */
 const http = require("http");
 const https = require("https");
@@ -54,7 +56,13 @@ const SOURCES = [
   { key: "huasheng",    name: "AI进化论·花生",       kind: "bilibili", type: "blogger", lang: "cn", mid: 14097567 },
   { key: "laoshi",      name: "老石谈芯",            kind: "bilibili", type: "blogger", lang: "cn", mid: 612932327 },
   /* ---- 博主 · 英文 ---- */
-  { key: "simonw",      name: "Simon Willison",  kind: "rss", type: "blogger", lang: "en", url: "https://simonwillison.net/atom/everything/" }
+  { key: "simonw",      name: "Simon Willison",  kind: "rss", type: "blogger", lang: "en", url: "https://simonwillison.net/atom/everything/" },
+  /* ---- 论文 · 英文（arXiv 官方 API，按提交时间倒序） ---- */
+  { key: "arxiv_ai",    name: "arXiv · cs.AI",   kind: "rss", type: "paper", lang: "en", url: "https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=30" },
+  { key: "arxiv_cl",    name: "arXiv · cs.CL",   kind: "rss", type: "paper", lang: "en", url: "https://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=30" },
+  /* ---- 社区与仓库 · 英文 ---- */
+  { key: "reddit_llm",  name: "Reddit · LocalLLaMA", kind: "rss", type: "community", lang: "en", url: "https://www.reddit.com/r/LocalLLaMA/.rss" },
+  { key: "ghtrend",     name: "GitHub · 热门新仓库", kind: "gh",  type: "repo",  lang: "en" }
 ];
 
 /* ---------- HTTP 抓取 ---------- */
@@ -347,6 +355,103 @@ function annotateDupes(feeds) {
   }
 }
 
+/* ---------- GitHub 热门新仓库（官方 Search API） ---------- */
+function parseGh(list) {
+  const out = [];
+  for (const r of list || []) {
+    if (!r.full_name || !r.html_url) continue;
+    const bits = [r.description || "", r.language || "", "★ " + r.stargazers_count].filter(Boolean);
+    out.push({
+      title: r.full_name,
+      link: r.html_url,
+      ts: r.created_at ? Date.parse(r.created_at) : 0,
+      snippet: cleanText(bits.join(" · "), 180),
+      image: (r.owner && r.owner.avatar_url) || ""
+    });
+  }
+  return out.sort((a, b) => b.ts - a.ts);
+}
+
+/* ---------- 热词统计与每日简报 ---------- */
+const STOP_TOKENS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "are", "was", "were", "has", "have",
+  "new", "how", "why", "what", "you", "your", "can", "will", "all", "get", "out", "about",
+  "into", "more", "not", "but", "just", "now", "via", "using", "use",
+  "to", "of", "in", "on", "is", "it", "at", "as", "be", "by", "an", "or", "up", "vs", "if", "do", "no", "so", "we", "my",
+  "的", "了", "在", "是", "和", "与", "及", "对", "从", "到", "被", "把", "一个", "这个", "那个",
+  "我们", "他们", "怎么", "如何", "为什么", "什么", "可以", "已经", "进行", "发布", "推出",
+  "宣布", "官宣", "上线", "带来", "独家", "汇总", "盘点"
+]);
+/* 最近 days 天标题分词热度（复用聚合用的 titleTokens），取前 top 个 */
+function hotwords(feeds, days = 7, top = 12) {
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+  const freq = {};
+  for (const f of Object.values(feeds || {})) {
+    for (const it of f.items || []) {
+      if (!it.ts || it.ts < since) continue;
+      const seen = new Set();
+      for (const t of titleTokens(it.title)) {
+        if (seen.has(t) || STOP_TOKENS.has(t) || /^\d+$/.test(t)) continue;
+        seen.add(t);
+        freq[t] = (freq[t] || 0) + 1;
+      }
+    }
+  }
+  return Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, top).map(([word, count]) => ({ word, count }));
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+/* /digest 每日简报：最近 24 小时条目按类型分组 + 热词，浅色排版、适合直接打印 */
+function buildDigestHtml(data) {
+  const now = Date.now();
+  const since = now - 24 * 60 * 60 * 1000;
+  const sinfo = Object.fromEntries(SOURCES.map((s) => [s.key, s]));
+  const rows = [];
+  for (const [key, f] of Object.entries((data && data.feeds) || {})) {
+    for (const it of f.items || []) {
+      if (it.dupOf || !it.ts || it.ts < since) continue;
+      rows.push({ ...it, src: key });
+    }
+  }
+  rows.sort((a, b) => (b.dupCount || 0) - (a.dupCount || 0) || (b.ts || 0) - (a.ts || 0));
+  const TYPE_LABEL = { institution: "🏢 官方机构", media: "📰 媒体报道", community: "👥 社区讨论", blogger: "✍ 博主 · UP主", paper: "📄 论文速览", repo: "📦 热门新仓库" };
+  const sections = {};
+  for (const r of rows) {
+    const t = (sinfo[r.src] || {}).type || "media";
+    (sections[t] = sections[t] || []).push(r);
+  }
+  const bits = [];
+  bits.push('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AI 情报站 · 今日简报</title><style>');
+  bits.push("body{font-family:'Segoe UI','Microsoft YaHei',system-ui,sans-serif;max-width:860px;margin:0 auto;padding:28px 22px 60px;color:#1c2333;background:#fbfbfd;line-height:1.65}");
+  bits.push("h1{font-size:22px}.sub{color:#6b7280;font-size:12.5px;margin:4px 0 18px}.sub a{color:#4353b0}");
+  bits.push(".chips{margin:0 0 20px}.chip{display:inline-block;background:#eef1ff;border:1px solid #dfe4ff;border-radius:999px;padding:3px 11px;font-size:12.5px;margin:0 6px 6px 0;color:#4353b0}");
+  bits.push("h2{font-size:16px;border-left:3px solid #5b8cff;padding-left:9px;margin:26px 0 8px}");
+  bits.push(".item{padding:9px 0;border-bottom:1px solid #eceef4;page-break-inside:avoid}");
+  bits.push(".item a{color:#1c2333;text-decoration:none;font-weight:600;font-size:14.5px}.item a:hover{color:#4353b0}");
+  bits.push(".item .m{color:#8a92a6;font-size:12px;margin-top:2px}.item .m b{color:#4353b0;font-weight:600}");
+  bits.push(".dup{background:#fff7e8;border-radius:6px;padding:1px 7px;font-size:11.5px;color:#a26a12;margin-left:6px}");
+  bits.push("@media print{body{padding:0;background:#fff}}");
+  bits.push('</style></head><body><h1>🤖 AI 情报站 · 今日简报</h1>');
+  bits.push('<div class="sub">覆盖最近 24 小时 · ' + rows.length + " 条 · " + new Set(rows.map((r) => r.src)).size + " 个来源 · 生成于 " + escapeHtml(new Date(now).toLocaleString("zh-CN")) + ' · <a href="/" target="_blank">返回主页</a></div>');
+  const words = hotwords(data && data.feeds);
+  if (words.length) bits.push('<div class="chips">' + words.map((w) => '<span class="chip">' + escapeHtml(w.word) + " × " + w.count + "</span>").join("") + "</div>");
+  for (const t of Object.keys(TYPE_LABEL)) {
+    const list = sections[t] || [];
+    if (!list.length) continue;
+    bits.push("<h2>" + TYPE_LABEL[t] + "（" + list.length + "）</h2>");
+    for (const r of list) {
+      const s = sinfo[r.src] || {};
+      const dup = r.dupCount > 0 ? '<span class="dup">另有 ' + r.dupCount + " 条相同报道</span>" : "";
+      const when = new Date(r.ts).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      bits.push('<div class="item"><a href="' + escapeHtml(r.link) + '" target="_blank" rel="noopener">' + escapeHtml(r.title) + "</a>" + dup + '<div class="m"><b>' + escapeHtml(s.name || r.src) + "</b> · " + when + "</div></div>");
+    }
+  }
+  if (!rows.length) bits.push('<div class="sub">最近 24 小时暂无新内容。</div>');
+  bits.push("</body></html>");
+  return bits.join("");
+}
+
 /* ---------- 缓存与刷新 ---------- */
 let memCache = null;
 let refreshing = null;
@@ -396,6 +501,29 @@ function condStore(headers) {
 async function fetchSource(s, validators) {
   if (s.kind === "bilibili") {
     return { items: await fetchBilibili(s.mid), headers: {} };
+  }
+  if (s.kind === "gh") {
+    /* GitHub Trending 替代：官方 Search API 取最近 7 天新发布的热门仓库。
+     * REST Search 不支持 topic 限定词之间的 OR，改为按 topic 分查后合并去重。 */
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const topics = ["llm", "ai-agents", "mcp"];
+    const lists = await Promise.all(topics.map((tp) =>
+      getJson("https://api.github.com/search/repositories?q=" + encodeURIComponent(`topic:${tp} created:>${since}`) + "&sort=stars&order=desc&per_page=10",
+        { Accept: "application/vnd.github+json" }).catch(() => null)
+    ));
+    const rows = lists.filter(Boolean);
+    if (!rows.length) throw new Error("github search failed");
+    const seen = new Set();
+    const merged = [];
+    for (const j of rows) {
+      for (const r of j.items || []) {
+        if (seen.has(r.full_name)) continue;
+        seen.add(r.full_name);
+        merged.push(r);
+      }
+    }
+    merged.sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0));
+    return { items: parseGh(merged.slice(0, 15)), headers: {} };
   }
   if (s.kind === "sohu") {
     const r = await fetchUrlRaw(`https://m.sohu.com/media/${s.authorId}`, condHeaders(validators));
@@ -508,6 +636,29 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
     return res.end(JSON.stringify({ ts: now, cacheTs: data ? data.ts : null, schemaVersion: data ? (data.schemaVersion || 1) : null, sources }, null, 2));
   }
+  if (u.pathname === "/api/digest") {
+    let data = memCache || readDiskCache();
+    if (!data || !data.feeds) { try { data = await refreshAll(); } catch {} }
+    const dnow = Date.now();
+    const dsince = dnow - 24 * 60 * 60 * 1000;
+    const sinfo = Object.fromEntries(SOURCES.map((s) => [s.key, s]));
+    const items = [];
+    for (const [key, f] of Object.entries((data && data.feeds) || {})) {
+      for (const it of f.items || []) {
+        if (it.dupOf || !it.ts || it.ts < dsince) continue;
+        items.push({ ...it, src: key, srcName: (sinfo[key] || {}).name || key, srcType: (sinfo[key] || {}).type || "media" });
+      }
+    }
+    items.sort((a, b) => (b.dupCount || 0) - (a.dupCount || 0) || (b.ts || 0) - (a.ts || 0));
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    return res.end(JSON.stringify({ ts: dnow, since: dsince, total: items.length, hotwords: hotwords(data && data.feeds), items }));
+  }
+  if (u.pathname === "/digest") {
+    let data = memCache || readDiskCache();
+    if (!data || !data.feeds) { try { data = await refreshAll(); } catch {} }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(buildDigestHtml(data || { feeds: {} }));
+  }
   if (u.pathname === "/" || u.pathname === "/index.html") {
     try {
       const html = fs.readFileSync(INDEX);
@@ -532,6 +683,8 @@ function listenOn(port) {
       fs.writeFileSync(PORT_FILE, String(p));
       try { fs.writeFileSync(NODE_PATH_FILE, process.execPath); } catch {}
       console.log("AI 情报站服务已启动: http://127.0.0.1:" + p + "/");
+      /* 迭代三：服务端定时自刷新，保证缓存常热（getFeeds 内部按 TTL 判定是否真正抓取） */
+      setInterval(() => { getFeeds(false).catch(() => {}); }, 10 * 60 * 1000);
       return;
     }
   }
