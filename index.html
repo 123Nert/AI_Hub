@@ -224,7 +224,6 @@
     <button data-quick="recent">⚡ 最近 24 小时</button>
     <button data-quick="tools">🧰 工具 / 教程 / 工作流</button>
     <button data-quick="models">🧠 模型 / 发布 / 评测</button>
-    <button data-quick="phones">📱 手机上新</button>
     <button data-quick="star">⭐ 收藏</button>
     <button data-quick="clear">清除快捷筛选</button>
     <button id="muteBtn" title="按正则规则隐藏不感兴趣的内容">🔇 屏蔽</button>
@@ -236,19 +235,25 @@
     <span style="color:var(--muted)">规则保存在本机浏览器。</span>
   </div>
   <div class="hotrow" id="hotRow" hidden></div>
+  <div class="sourcebar">
+    <span><span id="countsText">正在统计来源…</span><span id="filterText"></span></span>
+    <span class="srcbar-right"><button id="exportMd" title="导出当前筛选结果为 Markdown">⬇ MD</button><button id="exportJson" title="导出当前筛选结果为 JSON">⬇ JSON</button><button id="readAllBtn">✓ 全部已读</button><span>点击卡片查看原文 ↗</span></span>
+  </div>
+  <div class="srcnote" id="srcnote"></div>
+  <nav id="secRow" class="filterrow">
+    <span class="flabel">板块</span>
+    <button data-sec="feed" class="on">🤖 AI 资讯</button>
+    <button data-sec="phones">📱 手机上新</button>
+    <button data-sec="trend">🔥 GitHub 周榜</button>
+  </nav>
   <section id="trendSec" class="trendsec" hidden>
     <div class="trendhead">
       <b>🔥 GitHub 周热榜 · Top 10</b>
       <span id="trendMeta"></span>
       <button id="trendToggle" title="收起 / 展开周热榜">收起</button>
     </div>
-    <div id="trendGrid" class="trendgrid"></div>
+    <div id="trendGrid" class="trendgrid"><div class="empty" style="padding:16px 0;font-size:12.5px">加载中…</div></div>
   </section>
-  <div class="sourcebar">
-    <span><span id="countsText">正在统计来源…</span><span id="filterText"></span></span>
-    <span class="srcbar-right"><button id="exportMd" title="导出当前筛选结果为 Markdown">⬇ MD</button><button id="exportJson" title="导出当前筛选结果为 JSON">⬇ JSON</button><button id="readAllBtn">✓ 全部已读</button><span>点击卡片查看原文 ↗</span></span>
-  </div>
-  <div class="srcnote" id="srcnote"></div>
   <main class="grid" id="grid"><div class="skel"></div><div class="skel"></div><div class="skel"></div>
     <div class="skel"></div><div class="skel"></div><div class="skel"></div></main>
   <footer>数据来自各站点公开 RSS · 本地服务每 15 分钟更新缓存 · 已读/收藏仅保存在本机浏览器（localStorage）· 快捷筛选仅做客户端筛选，不代表完整收录 · <a href="/api/stats" target="_blank" rel="noopener" style="color:inherit">服务状态</a></footer>
@@ -270,6 +275,7 @@ let DATA = null, q = "";
 let ftype = localStorage.getItem("aihub_ftype") || "all";
 let flang = localStorage.getItem("aihub_flang") || "all";
 let quick = localStorage.getItem("aihub_quick") || "all";
+if (quick === "phones") { quick = "all"; localStorage.setItem("aihub_quick", "all"); } /* 手机上新已升级为板块导航 */
 let sourceSel = localStorage.getItem("aihub_fsource") || "all";
 let theme = localStorage.getItem("aihub_theme") || "auto";
 let stopic = localStorage.getItem("aihub_ftopic") || "all";
@@ -278,6 +284,8 @@ let MUTE = (() => {
   try { const m = JSON.parse(localStorage.getItem("aihub_mute")); return (m && typeof m.on === "boolean" && Array.isArray(m.rules)) ? m : { on: false, rules: [] }; }
   catch { return { on: false, rules: [] }; }
 })();
+let sec = localStorage.getItem("aihub_sec") || "feed";
+if (!["feed", "phones", "trend"].includes(sec)) sec = "feed";
 
 /* 已读 / 收藏：link -> 时间戳，超 3000 条按时间淘汰 */
 function loadMap(k) { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } }
@@ -305,7 +313,7 @@ const TYPE_INFO = {
   repo:        { label: "新仓库", bg: "rgba(235,240,250,.14)", fg: "#c9d2e8", bgL: "rgba(70,90,140,.10)", fgL: "#47598c" }
 };
 const LANG_INFO = { cn: "中文", en: "English" };
-const QUICK_LABEL = { all: "全部", recent: "最近24小时", tools: "工具 / 教程 / 工作流", models: "模型 / 发布 / 评测", phones: "📱 手机上新", star: "⭐ 收藏" };
+const QUICK_LABEL = { all: "全部", recent: "最近24小时", tools: "工具 / 教程 / 工作流", models: "模型 / 发布 / 评测", star: "⭐ 收藏" };
 function platformOf(s) {
   if (s.kind === "bilibili") return "B站视频";
   if (s.kind === "gh") return "GitHub";
@@ -323,7 +331,6 @@ function matchesQuick(r) {
   const text = (r.title + " " + (r.snippet || "")).toLowerCase();
   if (quick === "tools") return /工具|教程|工作流|提示词|agent|cursor|claude code|copilot|workflow|tutorial|prompt|coding|编程|实战|how to/.test(text);
   if (quick === "models") return /模型|发布|评测|基准|版本|gpt|gemini|claude|deepseek|llama|model|release|benchmark|openai|anthropic|google ai/.test(text);
-  if (quick === "phones") return /(手机|iphone|苹果|华为|小米|xiaomi|redmi|oppo|vivo|一加|oneplus|荣耀|honor|三星|galaxy|pixel|realme|真我|iqoo|努比亚|魅族|meizu|折叠屏|旗舰|骁龙|天玑|麒麟|快充|开售|首销|发布会|上新)/.test(text);
   return true;
 }
 
@@ -348,6 +355,9 @@ function compileMutes() {
   if (!MUTE.on) return [];
   return (MUTE.rules || []).map(rx => { try { return new RegExp(rx, "i"); } catch { return null; } }).filter(Boolean);
 }
+/* 手机上新匹配：板块筛选共用 */
+const PHONE_RX = /(手机|iphone|苹果|华为|小米|xiaomi|redmi|oppo|vivo|一加|oneplus|荣耀|honor|三星|galaxy|pixel|realme|真我|iqoo|努比亚|魅族|meizu|折叠屏|旗舰|骁龙|天玑|麒麟|快充|开售|首销|发布会|上新)/i;
+function isPhoneRow(r) { return PHONE_RX.test(String(r.title || "") + " " + String(r.snippet || "")); }
 /* 7 日热词：标题分词（英文整词 + 中文 bigram），点击即搜索 */
 const HOT_STOP = new Set(["the","and","for","with","from","that","this","are","was","were","has","have","new","how","why","what","you","your","can","will","all","get","out","about","into","more","not","but","just","now","via","using","use","to","of","in","on","is","it","at","as","be","by","an","or","up","vs","if","do","no","so","we","my","的","了","在","是","和","与","及","对","从","到","被","把","一个","这个","那个","我们","他们","怎么","如何","为什么","什么","可以","已经","进行","发布","推出","宣布","官宣","上线","带来","独家","汇总","盘点"]);
 function hotTokens(t) {
@@ -430,11 +440,13 @@ function render() {
   paintHotwords(base);
   mutedNow = mutedCount;
   const shown = base.filter(r =>
+    (sec !== "phones" || isPhoneRow(r)) &&
     matchesQuick(r) &&
     (!kw || r.title.toLowerCase().includes(kw) || (r.snippet || "").toLowerCase().includes(kw)));
   lastShown = shown; lastInfo = infoOf;
   paintGrid(shown, infoOf);
   paintSummary(shown, infoOf);
+  applySecVisibility();
 }
 
 function paintGrid(shown, infoOf) {
@@ -532,6 +544,7 @@ function paintSummary(shown, infoOf) {
   if (flang !== "all") activeParts.push(LANG_INFO[flang] || flang);
   if (sourceSel !== "all") activeParts.push((infoOf[sourceSel] || {}).name || sourceSel);
   if (stopic !== "all") activeParts.push((allTopics().find(t => t.id === stopic) || {}).name || stopic);
+  if (sec === "phones") activeParts.push("📱 手机上新板块");
   if (quick !== "all") activeParts.push(QUICK_LABEL[quick] || quick);
   if (MUTE.on) activeParts.push("🔇 屏蔽" + (mutedNow ? " × " + mutedNow : ""));
   if (q.trim()) activeParts.push("搜索：" + q.trim());
@@ -876,17 +889,35 @@ async function loadTrending() {
       if (it.lang) { const l = document.createElement("span"); l.className = "trendlang"; l.textContent = it.lang; a.appendChild(l); }
       grid.appendChild(a);
     });
-    $("#trendSec").hidden = trendHide;
-    $("#trendToggle").textContent = trendHide ? "展开" : "收起";
+    $("#trendSec").hidden = trendHide ? true : sec !== "trend";
+    applySecVisibility();
   } catch { $("#trendSec").hidden = true; }
 }
 $("#trendToggle").addEventListener("click", () => {
   trendHide = !trendHide;
   localStorage.setItem("aihub_trendhide", trendHide ? "1" : "0");
-  $("#trendSec").hidden = trendHide;
+  applySecVisibility();
+});
+/* ---------- 板块导航：AI 资讯 / 手机上新 / GitHub 周榜 ---------- */
+function applySecVisibility() {
+  const trendTab = sec === "trend";
+  $("#grid").style.display = trendTab ? "none" : "";
+  $("#trendSec").hidden = !trendTab || trendHide;
   $("#trendToggle").textContent = trendHide ? "展开" : "收起";
+}
+$("#secRow").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  sec = b.dataset.sec;
+  localStorage.setItem("aihub_sec", sec);
+  shownCount = PAGE_STEP;
+  $("#secRow").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  applySecVisibility();
+  render();
 });
 loadTrending();
+$("#secRow").querySelectorAll("button").forEach(x => x.classList.toggle("on", x.dataset.sec === sec));
+applySecVisibility();
 
 ftype = bindFilter("#typeRow", "aihub_ftype", (v) => { ftype = v; shownCount = PAGE_STEP; });
 flang = bindFilter("#langRow", "aihub_flang", (v) => { flang = v; shownCount = PAGE_STEP; });
