@@ -85,7 +85,7 @@ If Not Alive(port) Then
         WScript.Quit 1
     End If
 
-    sh.Run """" & nodeExe & """ """" & scriptPath & """", 0, False
+    sh.Run """" & nodeExe & """ """ & scriptPath & """", 0, False
     Dim i
     For i = 1 To 40   ' ×î¶àµÈ´ý 10 Ãë
         WScript.Sleep 250
