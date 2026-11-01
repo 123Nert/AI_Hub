@@ -183,11 +183,13 @@
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">加载中…</span></div>
     <div class="spacer"></div>
     <input id="search" type="search" placeholder="搜索标题 / 摘要…">
+    <button class="iconbtn" id="filterToggle" title="显示 / 隐藏筛选区">⚙ 筛选</button>
     <a class="iconbtn" href="/digest" target="_blank" title="最近 24 小时简报，可直接打印">📰 简报</a>
     <button class="iconbtn" id="statsBtn" title="各信息源抓取健康状态">📊 源状态</button>
     <button class="iconbtn" id="themeBtn" title="主题">🌓</button>
     <button id="refresh">刷新</button>
   </header>
+  <div id="filterArea">
   <nav id="typeRow" class="filterrow">
     <span class="flabel">类型</span>
     <button data-v="all" class="on">全部</button>
@@ -235,6 +237,7 @@
     <span style="color:var(--muted)">规则保存在本机浏览器。</span>
   </div>
   <div class="hotrow" id="hotRow" hidden></div>
+  </div>
   <div class="sourcebar">
     <span><span id="countsText">正在统计来源…</span><span id="filterText"></span></span>
     <span class="srcbar-right"><button id="exportMd" title="导出当前筛选结果为 Markdown">⬇ MD</button><button id="exportJson" title="导出当前筛选结果为 JSON">⬇ JSON</button><button id="readAllBtn">✓ 全部已读</button><span>点击卡片查看原文 ↗</span></span>
@@ -918,6 +921,19 @@ $("#secRow").addEventListener("click", (e) => {
 loadTrending();
 $("#secRow").querySelectorAll("button").forEach(x => x.classList.toggle("on", x.dataset.sec === sec));
 applySecVisibility();
+
+/* ---------- 筛选区折叠（默认收起，状态记忆） ---------- */
+let filterShow = localStorage.getItem("aihub_filtershow") === "1";
+function applyFilterVisibility() {
+  $("#filterArea").hidden = !filterShow;
+  $("#filterToggle").textContent = filterShow ? "⚙ 收起筛选" : "⚙ 筛选";
+}
+$("#filterToggle").addEventListener("click", () => {
+  filterShow = !filterShow;
+  localStorage.setItem("aihub_filtershow", filterShow ? "1" : "0");
+  applyFilterVisibility();
+});
+applyFilterVisibility();
 
 ftype = bindFilter("#typeRow", "aihub_ftype", (v) => { ftype = v; shownCount = PAGE_STEP; });
 flang = bindFilter("#langRow", "aihub_flang", (v) => { flang = v; shownCount = PAGE_STEP; });
