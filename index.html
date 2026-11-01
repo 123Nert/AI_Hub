@@ -17,6 +17,8 @@
     --meta: #8a92a6; --faint: #b8bfd0; --staridle: #c3cad9; --hoverline: #b9c6ee;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* hidden 属性优先级必须高于各类 display:flex 规则，否则弹层/表单会常显 */
+  [hidden] { display: none !important; }
   body {
     background: var(--bg); color: var(--text);
     font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
