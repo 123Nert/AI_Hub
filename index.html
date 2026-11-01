@@ -140,6 +140,24 @@
   .hotword { background: rgba(154,107,255,.10); color: #a88dff; border: 1px solid rgba(154,107,255,.3);
     border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
   .hotword:hover { background: rgba(154,107,255,.22); color: #c9b2ff; }
+  .trendsec { background: var(--bg2); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 0 0 16px; }
+  .trendhead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .trendhead b { font-size: 14px; }
+  #trendMeta { color: var(--muted); font-size: 12px; }
+  #trendToggle { margin-left: auto; background: var(--card); border: 1px solid var(--line); color: var(--muted);
+    border-radius: 999px; padding: 2px 11px; font-size: 12px; cursor: pointer; }
+  #trendToggle:hover { color: var(--text); border-color: var(--accent); }
+  .trendgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 8px; }
+  .trendrow { display: flex; flex-direction: column; gap: 3px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 9px 12px; text-decoration: none; color: inherit; transition: .15s; }
+  .trendrow:hover { background: var(--card-hover); border-color: var(--hoverline); }
+  .trendline1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .trendrank { font-weight: 800; color: var(--accent); font-size: 13px; }
+  .trendname { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trendstars { margin-left: auto; color: #f5b544; font-size: 12px; white-space: nowrap; }
+  .trenddesc { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trendlang { font-size: 11.5px; color: var(--meta); }
+  html[data-theme="light"] .trendstars { color: #9a6b12; }
   .modal-mask { position: fixed; inset: 0; background: rgba(8,10,18,.62); display: flex;
     align-items: center; justify-content: center; z-index: 50; }
   .modal { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
@@ -218,6 +236,14 @@
     <span style="color:var(--muted)">规则保存在本机浏览器。</span>
   </div>
   <div class="hotrow" id="hotRow" hidden></div>
+  <section id="trendSec" class="trendsec" hidden>
+    <div class="trendhead">
+      <b>🔥 GitHub 周热榜 · Top 10</b>
+      <span id="trendMeta"></span>
+      <button id="trendToggle" title="收起 / 展开周热榜">收起</button>
+    </div>
+    <div id="trendGrid" class="trendgrid"></div>
+  </section>
   <div class="sourcebar">
     <span><span id="countsText">正在统计来源…</span><span id="filterText"></span></span>
     <span class="srcbar-right"><button id="exportMd" title="导出当前筛选结果为 Markdown">⬇ MD</button><button id="exportJson" title="导出当前筛选结果为 JSON">⬇ JSON</button><button id="readAllBtn">✓ 全部已读</button><span>点击卡片查看原文 ↗</span></span>
@@ -824,6 +850,43 @@ $("#themeBtn").addEventListener("click", () => {
   applyTheme();
 });
 matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (theme === "auto") applyTheme(); });
+
+/* ---------- GitHub 周热榜 ---------- */
+let trendHide = localStorage.getItem("aihub_trendhide") === "1";
+async function loadTrending() {
+  try {
+    const j = await (await fetch("/api/trending")).json();
+    if (!j.items || !j.items.length) { $("#trendSec").hidden = true; return; }
+    $("#trendMeta").textContent = "周起 " + j.week + " · 每周一更新" + (j.updatedAt ? " · 抓取于 " + new Date(j.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+    const grid = $("#trendGrid");
+    grid.innerHTML = "";
+    j.items.forEach((it, i) => {
+      const a = document.createElement("a");
+      a.className = "trendrow";
+      a.href = it.url; a.target = "_blank"; a.rel = "noopener";
+      const l1 = document.createElement("span");
+      l1.className = "trendline1";
+      const rk = document.createElement("span"); rk.className = "trendrank"; rk.textContent = String(i + 1);
+      const nm = document.createElement("span"); nm.className = "trendname"; nm.textContent = it.full;
+      const st = document.createElement("span"); st.className = "trendstars";
+      st.textContent = "★ " + (it.starsWeek ? it.starsWeek.toLocaleString("zh-CN") + " / 周" : String(it.starsTotal || ""));
+      l1.append(rk, nm, st);
+      a.appendChild(l1);
+      if (it.desc) { const d = document.createElement("span"); d.className = "trenddesc"; d.textContent = it.desc; a.appendChild(d); }
+      if (it.lang) { const l = document.createElement("span"); l.className = "trendlang"; l.textContent = it.lang; a.appendChild(l); }
+      grid.appendChild(a);
+    });
+    $("#trendSec").hidden = trendHide;
+    $("#trendToggle").textContent = trendHide ? "展开" : "收起";
+  } catch { $("#trendSec").hidden = true; }
+}
+$("#trendToggle").addEventListener("click", () => {
+  trendHide = !trendHide;
+  localStorage.setItem("aihub_trendhide", trendHide ? "1" : "0");
+  $("#trendSec").hidden = trendHide;
+  $("#trendToggle").textContent = trendHide ? "展开" : "收起";
+});
+loadTrending();
 
 ftype = bindFilter("#typeRow", "aihub_ftype", (v) => { ftype = v; shownCount = PAGE_STEP; });
 flang = bindFilter("#langRow", "aihub_flang", (v) => { flang = v; shownCount = PAGE_STEP; });

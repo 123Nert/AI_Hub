@@ -460,6 +460,72 @@ function buildDigestHtml(data) {
   return bits.join("");
 }
 
+/* ---------- GitHub 周热榜 Top 10（周一为界的 ISO 周快照） ---------- */
+function weekKey(d = new Date()) {
+  /* 当前周周一的日期作为快照键：跨周一后的首次访问/自检触发重新抓取 */
+  const dt = new Date(d.getTime());
+  const day = (dt.getDay() + 6) % 7; /* 周一=0 */
+  dt.setDate(dt.getDate() - day);
+  const p = (n) => String(n).padStart(2, "0");
+  return dt.getFullYear() + "-" + p(dt.getMonth() + 1) + "-" + p(dt.getDate());
+}
+function parseTrending(html) {
+  const out = [];
+  const articles = html.match(/<article[^>]*Box-row[^>]*>[\s\S]*?<\/article>/g) || [];
+  for (const a of articles) {
+    const link = a.match(/href="\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)"/);
+    if (!link) continue;
+    const full = link[1];
+    if (/^(topics|collections|trending|about|pricing|sponsors|features|enterprise|security|login|join|site)(\/|$)/i.test(full)) continue;
+    const week = a.match(/([\d,]+)\s*stars\s*(?:this week|this month|today)/i);
+    const total = a.match(/stargazers"[^>]*>[\s\S]{0,900}?([\d,]+)\s*<\/a>/i);
+    const lang = a.match(/programmingLanguage">([^<]+)</);
+    const desc = cleanText((a.match(/<p class="col-9[^"]*"[^>]*>([\s\S]*?)<\/p>/) || [])[1] || "", 160);
+    out.push({
+      full,
+      url: "https://github.com/" + full,
+      desc,
+      lang: lang ? lang[1].trim() : "",
+      starsWeek: week ? parseInt(week[1].replace(/,/g, ""), 10) : 0,
+      starsTotal: total ? parseInt(total[1].replace(/,/g, ""), 10) : 0
+    });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+let trendingFetching = null;
+async function getTrending() {
+  const wk = weekKey();
+  const cache = memCache || readDiskCache();
+  if (cache) memCache = cache;
+  if (cache && cache.trending && cache.trending.week === wk && (cache.trending.items || []).length) {
+    return cache.trending;
+  }
+  if (trendingFetching) return trendingFetching;
+  trendingFetching = (async () => {
+    try {
+      const html = await fetchUrl("https://github.com/trending?since=weekly", { "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9" });
+      const items = parseTrending(html);
+      if (!items.length) throw new Error("trending parse empty");
+      const t = { week: wk, ts: Date.now(), items };
+      if (memCache) { memCache.trending = t; writeDiskCache(memCache); }
+      else {
+        const disk = readDiskCache() || { schemaVersion: SCHEMA_VERSION, ts: Date.now(), feeds: {}, stats: {}, validators: {} };
+        disk.trending = t;
+        memCache = disk;
+        writeDiskCache(memCache);
+      }
+      logEv("trending", { ok: 1, week: wk, items: items.length });
+      return t;
+    } catch (e) {
+      /* 抓取失败保留上一期数据，页面照常展示 */
+      logEv("trending", { ok: 0, error: String(e.message || e), week: wk });
+      return (cache && cache.trending) || null;
+    } finally { trendingFetching = null; }
+  })();
+  return trendingFetching;
+}
+
 /* ---------- 缓存与刷新 ---------- */
 let memCache = null;
 let refreshing = null;
@@ -581,7 +647,7 @@ async function refreshAll() {
       }
     });
     annotateDupes(feeds);
-    memCache = { schemaVersion: SCHEMA_VERSION, ts: Date.now(), feeds, stats, validators };
+    memCache = { schemaVersion: SCHEMA_VERSION, ts: Date.now(), feeds, stats, validators, trending: (prev && prev.trending) || null };
     writeDiskCache(memCache);
     const okN = SOURCES.filter((s) => !feeds[s.key].error).length;
     const itemsN = Object.values(feeds).reduce((n, f) => n + (f.items || []).length, 0);
@@ -667,6 +733,11 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     return res.end(buildDigestHtml(data || { feeds: {} }));
   }
+  if (u.pathname === "/api/trending") {
+    const t = await getTrending();
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    return res.end(JSON.stringify({ week: t ? t.week : null, updatedAt: t ? t.ts : null, items: t ? t.items.slice(0, 10) : [] }));
+  }
   if (u.pathname === "/" || u.pathname === "/index.html") {
     try {
       const html = fs.readFileSync(INDEX);
@@ -692,7 +763,9 @@ function listenOn(port) {
       try { fs.writeFileSync(NODE_PATH_FILE, process.execPath); } catch {}
       console.log("AI 情报站服务已启动: http://127.0.0.1:" + p + "/");
       /* 迭代三：服务端定时自刷新，保证缓存常热（getFeeds 内部按 TTL 判定是否真正抓取） */
-      setInterval(() => { getFeeds(false).catch(() => {}); }, 10 * 60 * 1000);
+      /* 周热榜：启动与定时自检时检查周键，跨周一后的首次检查触发重新抓取 */
+      getTrending().catch(() => {});
+      setInterval(() => { getFeeds(false).catch(() => {}); getTrending().catch(() => {}); }, 10 * 60 * 1000);
       return;
     }
   }

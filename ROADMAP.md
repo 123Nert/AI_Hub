@@ -78,6 +78,8 @@
 
 > 2026-11-01 增补（tag v0.4.1）：应用户需求新增「📱 手机上新」栏目——快捷视图手机筛选 + 简报手机板块 + MacRumors / 9to5Google / Android Authority 三个垂媒源（共 28 源）。
 
+> 2026-11-01 增补（tag v0.4.2）：新增「🔥 GitHub 周热榜 Top 10」板块——服务端解析 github.com/trending?since=weekly（GitHub 无官方 trending API），按 ISO 周（周一为界）快照存入缓存 trending 字段，跨周自动重取、失败保留上期数据；`/api/trending` 提供数据；主页板块默认展开、可收起（记忆于 localStorage）。
+
 ## 迭代四（候选）：阅读与情报升级
 
 - Ctrl+K 命令面板：统一入口搜索/筛选/跳转，键盘导航（j/k 翻卡、o 打开、s 收藏）。
