@@ -253,7 +253,6 @@
     <div class="trendhead">
       <b>🔥 GitHub 周热榜 · Top 10</b>
       <span id="trendMeta"></span>
-      <button id="trendToggle" title="收起 / 展开周热榜">收起</button>
     </div>
     <div id="trendGrid" class="trendgrid"><div class="empty" style="padding:16px 0;font-size:12.5px">加载中…</div></div>
   </section>
@@ -358,9 +357,6 @@ function compileMutes() {
   if (!MUTE.on) return [];
   return (MUTE.rules || []).map(rx => { try { return new RegExp(rx, "i"); } catch { return null; } }).filter(Boolean);
 }
-/* 手机上新匹配：板块筛选共用 */
-const PHONE_RX = /(手机|iphone|苹果|华为|小米|xiaomi|redmi|oppo|vivo|一加|oneplus|荣耀|honor|三星|galaxy|pixel|realme|真我|iqoo|努比亚|魅族|meizu|折叠屏|旗舰|骁龙|天玑|麒麟|快充|开售|首销|发布会|上新)/i;
-function isPhoneRow(r) { return PHONE_RX.test(String(r.title || "") + " " + String(r.snippet || "")); }
 /* 7 日热词：标题分词（英文整词 + 中文 bigram），点击即搜索 */
 const HOT_STOP = new Set(["the","and","for","with","from","that","this","are","was","were","has","have","new","how","why","what","you","your","can","will","all","get","out","about","into","more","not","but","just","now","via","using","use","to","of","in","on","is","it","at","as","be","by","an","or","up","vs","if","do","no","so","we","my","的","了","在","是","和","与","及","对","从","到","被","把","一个","这个","那个","我们","他们","怎么","如何","为什么","什么","可以","已经","进行","发布","推出","宣布","官宣","上线","带来","独家","汇总","盘点"]);
 function hotTokens(t) {
@@ -430,22 +426,34 @@ function render() {
   rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const kw = q.trim().toLowerCase();
   const mutes = compileMutes();
-  let mutedCount = 0;
-  const base = rows.filter(r => {
-    const s = infoOf[r.src] || {};
-    if (!((ftype === "all" || s.type === ftype) &&
-          (flang === "all" || s.lang === flang) &&
-          (sourceSel === "all" || r.src === sourceSel))) return false;
-    if (!matchesTopic(r)) return false;
-    if (mutes.length && mutes.some(rx => rx.test(r.title + " " + (r.snippet || "")))) { mutedCount++; return false; }
-    return true;
-  });
+  const hitMute = (r) => mutes.some(rx => rx.test(r.title + " " + (r.snippet || "")));
+  let base, mutedCount = 0, shown;
+  if (sec === "phones") {
+    /* 手机上新板块：仅来自手机垂媒源（channel=phone），不受类型/语言/主题/来源/快捷筛选影响 */
+    shown = rows.filter(r => {
+      const s = infoOf[r.src] || {};
+      if ((s.channel || "") !== "phone") return false;
+      if (mutes.length && hitMute(r)) { mutedCount++; return false; }
+      return true;
+    });
+    if (kw) shown = shown.filter(r => r.title.toLowerCase().includes(kw) || (r.snippet || "").toLowerCase().includes(kw));
+    base = shown;
+  } else {
+    base = rows.filter(r => {
+      const s = infoOf[r.src] || {};
+      if (!((ftype === "all" || s.type === ftype) &&
+            (flang === "all" || s.lang === flang) &&
+            (sourceSel === "all" || r.src === sourceSel))) return false;
+      if (!matchesTopic(r)) return false;
+      if (mutes.length && hitMute(r)) { mutedCount++; return false; }
+      return true;
+    });
+    shown = base.filter(r =>
+      matchesQuick(r) &&
+      (!kw || r.title.toLowerCase().includes(kw) || (r.snippet || "").toLowerCase().includes(kw)));
+  }
   paintHotwords(base);
   mutedNow = mutedCount;
-  const shown = base.filter(r =>
-    (sec !== "phones" || isPhoneRow(r)) &&
-    matchesQuick(r) &&
-    (!kw || r.title.toLowerCase().includes(kw) || (r.snippet || "").toLowerCase().includes(kw)));
   lastShown = shown; lastInfo = infoOf;
   paintGrid(shown, infoOf);
   paintSummary(shown, infoOf);
@@ -543,12 +551,15 @@ function paintSummary(shown, infoOf) {
     return labels[type] + " " + n;
   }).join("　·　");
   const activeParts = [];
-  if (ftype !== "all") activeParts.push(TYPE_INFO[ftype]?.label || ftype);
-  if (flang !== "all") activeParts.push(LANG_INFO[flang] || flang);
-  if (sourceSel !== "all") activeParts.push((infoOf[sourceSel] || {}).name || sourceSel);
-  if (stopic !== "all") activeParts.push((allTopics().find(t => t.id === stopic) || {}).name || stopic);
-  if (sec === "phones") activeParts.push("📱 手机上新板块");
-  if (quick !== "all") activeParts.push(QUICK_LABEL[quick] || quick);
+  if (sec !== "phones") {
+    if (ftype !== "all") activeParts.push(TYPE_INFO[ftype]?.label || ftype);
+    if (flang !== "all") activeParts.push(LANG_INFO[flang] || flang);
+    if (sourceSel !== "all") activeParts.push((infoOf[sourceSel] || {}).name || sourceSel);
+    if (stopic !== "all") activeParts.push((allTopics().find(t => t.id === stopic) || {}).name || stopic);
+    if (quick !== "all") activeParts.push(QUICK_LABEL[quick] || quick);
+  } else {
+    activeParts.push("📱 手机上新板块");
+  }
   if (MUTE.on) activeParts.push("🔇 屏蔽" + (mutedNow ? " × " + mutedNow : ""));
   if (q.trim()) activeParts.push("搜索：" + q.trim());
   const activeText = activeParts.length ? "　·　筛选：" + activeParts.join(" × ") : "";
@@ -868,11 +879,14 @@ $("#themeBtn").addEventListener("click", () => {
 matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (theme === "auto") applyTheme(); });
 
 /* ---------- GitHub 周热榜 ---------- */
-let trendHide = localStorage.getItem("aihub_trendhide") === "1";
 async function loadTrending() {
   try {
     const j = await (await fetch("/api/trending")).json();
-    if (!j.items || !j.items.length) { $("#trendSec").hidden = true; return; }
+    if (!j.items || !j.items.length) {
+      if (sec === "trend") $("#trendGrid").innerHTML = '<div class="empty" style="padding:16px 0;font-size:12.5px">本期周榜暂无数据</div>';
+      else $("#trendSec").hidden = true;
+      return;
+    }
     $("#trendMeta").textContent = "周起 " + j.week + " · 每周一更新" + (j.updatedAt ? " · 抓取于 " + new Date(j.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
     const grid = $("#trendGrid");
     grid.innerHTML = "";
@@ -892,21 +906,17 @@ async function loadTrending() {
       if (it.lang) { const l = document.createElement("span"); l.className = "trendlang"; l.textContent = it.lang; a.appendChild(l); }
       grid.appendChild(a);
     });
-    $("#trendSec").hidden = trendHide ? true : sec !== "trend";
     applySecVisibility();
-  } catch { $("#trendSec").hidden = true; }
+  } catch {
+    if (sec === "trend") $("#trendGrid").innerHTML = '<div class="empty" style="padding:16px 0;font-size:12.5px">周榜暂时不可用，稍后再试</div>';
+    else $("#trendSec").hidden = true;
+  }
 }
-$("#trendToggle").addEventListener("click", () => {
-  trendHide = !trendHide;
-  localStorage.setItem("aihub_trendhide", trendHide ? "1" : "0");
-  applySecVisibility();
-});
 /* ---------- 板块导航：AI 资讯 / 手机上新 / GitHub 周榜 ---------- */
 function applySecVisibility() {
   const trendTab = sec === "trend";
   $("#grid").style.display = trendTab ? "none" : "";
-  $("#trendSec").hidden = !trendTab || trendHide;
-  $("#trendToggle").textContent = trendHide ? "展开" : "收起";
+  $("#trendSec").hidden = !trendTab;
 }
 $("#secRow").addEventListener("click", (e) => {
   const b = e.target.closest("button");

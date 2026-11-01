@@ -55,6 +55,9 @@ const SOURCES = [
   /* ---- 博主 · 中文（公众号 / 独立博客 / B站 UP主） ---- */
   { key: "xixiaoyao",   name: "夕小瑶科技说·公众号", kind: "rss", type: "blogger", lang: "cn", url: "https://wechat2rss.xlab.app/feed/a1cd365aa14ed7d64cabfc8aa086da40ecaba34d.xml" },
   { key: "appso",       name: "APPSO·公众号",       kind: "sohu", type: "media", lang: "cn", authorId: 602994 },
+  /* ---- 手机垂媒（📱 手机上新板块专用，channel=phone） ---- */
+  { key: "leikeji",     name: "雷科技",             kind: "sohu", type: "media", lang: "cn", channel: "phone", authorId: 116157 },
+  { key: "zol",         name: "中关村在线",          kind: "sohu", type: "media", lang: "cn", channel: "phone", authorId: 114822 },
   { key: "guicang",     name: "歸藏的AI工具箱",      kind: "bilibili", type: "blogger", lang: "cn", mid: 1741797 },
   { key: "huasheng",    name: "AI进化论·花生",       kind: "bilibili", type: "blogger", lang: "cn", mid: 14097567 },
   { key: "laoshi",      name: "老石谈芯",            kind: "bilibili", type: "blogger", lang: "cn", mid: 612932327 },
@@ -426,7 +429,7 @@ function buildDigestHtml(data) {
   const TYPE_LABEL = { phone: "📱 手机上新", institution: "🏢 官方机构", media: "📰 媒体报道", community: "👥 社区讨论", blogger: "✍ 博主 · UP主", paper: "📄 论文速览", repo: "📦 热门新仓库" };
   const sections = {};
   for (const r of rows) {
-    const t = isPhoneItem(r) ? "phone" : ((sinfo[r.src] || {}).type || "media");
+    const t = ((sinfo[r.src] || {}).channel === "phone" || isPhoneItem(r)) ? "phone" : ((sinfo[r.src] || {}).type || "media");
     (sections[t] = sections[t] || []).push(r);
   }
   const bits = [];
